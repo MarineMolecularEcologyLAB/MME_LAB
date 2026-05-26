@@ -1,0 +1,388 @@
+#!/bin/bash
+# LEfSe 분석 통합 스크립트: 3개 그룹 동시 비교 (Cont, Direct, Indirect)
+# 작성일: 2026-01-16
+
+echo "=========================================="
+echo "LEfSe 분석 시작: 3개 그룹 동시 비교"
+echo "=========================================="
+
+# Step 1: LEfSe 입력 파일 생성
+echo ""
+echo "Step 1: LEfSe 입력 파일 생성 중..."
+python3 << 'EOF'
+import pandas as pd
+
+df = pd.read_csv('Microbiome_Merged_All_TaxonomyMerged.tsv', sep='\t')
+sample_cols = [col for col in df.columns if col != 'Taxonomy']
+
+with open('lefse_input_3groups.txt', 'w') as f:
+    # Class 행
+    class_labels = ['Cont' if 'Cont' in s else 'Direct' if 'Direct' in s else 'Indirect' for s in sample_cols]
+    f.write('\t'.join(['Class'] + class_labels) + '\n')
+    
+    # Subject 행
+    f.write('\t'.join(['Subject'] + sample_cols) + '\n')
+    
+    # Feature 데이터
+    for idx, row in df.iterrows():
+        taxonomy = row['Taxonomy'].replace(';', '|')
+        values = [str(int(row[col])) for col in sample_cols]
+        f.write('\t'.join([taxonomy] + values) + '\n')
+
+print("✓ lefse_input_3groups.txt 생성 완료!")
+EOF
+
+# Step 2: LEfSe 포맷 변환
+echo ""
+echo "Step 2: LEfSe 포맷 변환 중..."
+lefse_format_input.py lefse_input_3groups.txt lefse_3groups.in -c 1 -s -1 -u 2 -o 1000000
+echo "✓ 포맷 변환 완료!"
+
+# Step 3: LEfSe 분석 실행
+echo ""
+echo "Step 3: LEfSe 분석 실행 중 (LDA threshold = 2.0)..."
+lefse_run.py lefse_3groups.in lefse_3groups_results.res -l 2.0 -w 0.05
+echo "✓ LEfSe 분석 완료!"
+
+# Step 4: 결과 확인
+echo ""
+echo "Step 4: 결과 요약"
+echo "----------------------------------------"
+num_biomarkers=$(wc -l < lefse_3groups_results.res)
+echo "총 유의한 바이오마커 수: $num_biomarkers"
+echo ""
+echo "상위 30개 바이오마커:"
+head -30 lefse_3groups_results.res
+
+# Step 5: 시각화 생성
+echo ""
+echo "Step 5: 시각화 생성 중..."
+
+# 바 플롯
+lefse_plot_res.py lefse_3groups_results.res lefse_barplot_3groups.png --format png --dpi 300 --width 10 --height 8
+echo "✓ 바 플롯 생성: lefse_barplot_3groups.png"
+
+# 클라도그램
+lefse_plot_cladogram.py lefse_3groups_results.res lefse_cladogram_3groups.png --format png --dpi 300
+echo "✓ 클라도그램 생성: lefse_cladogram_3groups.png"
+
+# 개별 바이오마커 분포 플롯
+mkdir -p biomarker_plots_3groups
+lefse_plot_features.py lefse_3groups.in lefse_3groups_results.res biomarker_plots_3groups/
+echo "✓ 개별 바이오마커 플롯 생성: biomarker_plots_3groups/"
+
+# Step 6: 테이블 생성
+echo ""
+echo "Step 6: 테이블 형식 결과 생성 중..."
+python3 << 'EOF'
+import pandas as pd
+
+results = []
+with open('lefse_3groups_results.res', 'r') as f:
+    for line in f:
+# Step 2-4: 결과 확인
+        parts = line.strip().split('\t')
+        if len(parts) >= 5:
+            taxonomy = parts[0]
+            lda_score = parts[1]
+            enriched_group = parts[2] if parts[2] else 'NS'
+            pvalue = parts[3] if len(parts) > 3 and parts[3] else 'NA'
+            results.append({
+                'Taxonomy': taxonomy,
+                'LDA_score': float(lda_score) if lda_score else 0,
+                'Enriched_group': enriched_group,
+                'P_value': pvalue
+            })
+
+df = pd.DataFrame(results)
+df = df[df['Enriched_group'] != 'NS']
+df = df.sort_values('LDA_score', ascending=False)
+
+# 전체 저장
+df.to_csv('lefse_results_3groups_table.tsv', sep='\t', index=False)
+
+# 상위 50개
+df_top50 = df.head(50)
+df_top50.to_csv('lefse_results_3groups_top50.tsv', sep='\t', index=False)
+
+print(f"✓ 전체 테이블 저장: lefse_results_3groups_table.tsv ({len(df)}개)")
+print(f"✓ 상위 50개 저장: lefse_results_3groups_top50.tsv")
+print(f"\n그룹별 바이오마커 수:")
+print(df['Enriched_group'].value_counts().to_string())
+EOF
+
+# 완료
+echo ""
+echo "=========================================="
+echo "분석 완료!"
+echo "=========================================="
+echo ""
+echo "생성된 파일:"
+echo "  - lefse_3groups_results.res: LEfSe 결과 원본"
+echo "  - lefse_barplot_3groups.png: LDA 바 플롯"
+echo "  - lefse_cladogram_3groups.png: 계통 클라도그램"
+echo "  - biomarker_plots_3groups/: 개별 바이오마커 분포 플롯"
+echo "  - lefse_results_3groups_table.tsv: 전체 결과 테이블"
+echo "  - lefse_results_3groups_top50.tsv: 상위 50개 결과 테이블"
+echo ""
+
+
+### 1vs1
+
+#!/bin/bash
+# LEfSe 분석 통합 스크립트: 1대1 비교 (Cont vs Direct, Cont vs Indirect)
+# 작성일: 2026-01-16
+
+echo "=========================================="
+echo "LEfSe 1대1 비교 분석 시작"
+echo "=========================================="
+
+#############################################
+# Part 1: Cont vs Direct
+#############################################
+echo ""
+echo "=========================================="
+echo "Part 1: Cont vs Direct 분석"
+echo "=========================================="
+
+# Step 1-1: 입력 파일 생성
+echo ""
+echo "Step 1: 입력 파일 생성 중..."
+python3 << 'EOF'
+import pandas as pd
+
+df = pd.read_csv('Microbiome_Merged_All_TaxonomyMerged.tsv', sep='\t')
+
+# Cont와 Direct 샘플만 선택
+cont_cols = [col for col in df.columns if 'Cont' in col]
+direct_cols = [col for col in df.columns if 'Direct' in col]
+selected_cols = ['Taxonomy'] + cont_cols + direct_cols
+
+df_subset = df[selected_cols]
+sample_cols = cont_cols + direct_cols
+
+with open('lefse_cont_vs_direct.txt', 'w') as f:
+    # Class 행
+    class_labels = ['Cont']*len(cont_cols) + ['Direct']*len(direct_cols)
+    f.write('\t'.join(['Class'] + class_labels) + '\n')
+    
+    # Subject 행
+    f.write('\t'.join(['Subject'] + sample_cols) + '\n')
+    
+    # Feature 데이터
+    for idx, row in df_subset.iterrows():
+        taxonomy = row['Taxonomy'].replace(';', '|')
+        values = [str(int(row[col])) for col in sample_cols]
+        f.write('\t'.join([taxonomy] + values) + '\n')
+
+print("✓ lefse_cont_vs_direct.txt 생성 완료!")
+EOF
+
+# Step 1-2: LEfSe 포맷 변환
+echo ""
+echo "Step 2: 포맷 변환 중..."
+lefse_format_input.py lefse_cont_vs_direct.txt lefse_cont_vs_direct.in -c 1 -s -1 -u 2 -o 1000000
+echo "✓ 포맷 변환 완료!"
+
+# Step 1-3: LEfSe 분석
+echo ""
+echo "Step 3: LEfSe 분석 실행 중 (LDA threshold = 2.0)..."
+lefse_run.py lefse_cont_vs_direct.in lefse_cont_vs_direct.res -l 2.0 -w 0.05
+echo "✓ 분석 완료!"
+
+# Step 1-4: 결과 확인
+echo ""
+echo "Step 4: 결과 요약"
+echo "----------------------------------------"
+num_biomarkers_cd=$(wc -l < lefse_cont_vs_direct.res)
+echo "총 유의한 바이오마커 수: $num_biomarkers_cd"
+echo ""
+echo "상위 30개 바이오마커:"
+head -30 lefse_cont_vs_direct.res
+
+# Step 1-5: 시각화
+echo ""
+echo "Step 5: 시각화 생성 중..."
+lefse_plot_res.py lefse_cont_vs_direct.res lefse_barplot_cont_vs_direct.png --format png --dpi 300 --width 10 --height 8
+echo "✓ 바 플롯: lefse_barplot_cont_vs_direct.png"
+
+lefse_plot_cladogram.py lefse_cont_vs_direct.res lefse_cladogram_cont_vs_direct.png --format png --dpi 300
+echo "✓ 클라도그램: lefse_cladogram_cont_vs_direct.png"
+
+mkdir -p biomarker_plots_cont_vs_direct
+lefse_plot_features.py lefse_cont_vs_direct.in lefse_cont_vs_direct.res biomarker_plots_cont_vs_direct/
+echo "✓ 개별 플롯: biomarker_plots_cont_vs_direct/"
+
+# Step 1-6: 테이블 생성
+echo ""
+echo "Step 6: 테이블 생성 중..."
+python3 << 'EOF'
+import pandas as pd
+
+results = []
+with open('lefse_cont_vs_direct.res', 'r') as f:
+    for line in f:
+        parts = line.strip().split('\t')
+        if len(parts) >= 5:
+            taxonomy = parts[0]
+            lda_score = parts[1]
+            enriched_group = parts[2] if parts[2] else 'NS'
+            pvalue = parts[3] if len(parts) > 3 and parts[3] else 'NA'
+            results.append({
+                'Taxonomy': taxonomy,
+                'LDA_score': float(lda_score) if lda_score else 0,
+                'Enriched_group': enriched_group,
+                'P_value': pvalue
+            })
+
+df = pd.DataFrame(results)
+df = df[df['Enriched_group'] != 'NS']
+df = df.sort_values('LDA_score', ascending=False)
+
+df.to_csv('lefse_cont_vs_direct_table.tsv', sep='\t', index=False)
+df.head(50).to_csv('lefse_cont_vs_direct_top50.tsv', sep='\t', index=False)
+
+print(f"✓ 전체 테이블: lefse_cont_vs_direct_table.tsv ({len(df)}개)")
+print(f"✓ 상위 50개: lefse_cont_vs_direct_top50.tsv")
+print(f"\n그룹별 바이오마커 수:")
+print(df['Enriched_group'].value_counts().to_string())
+EOF
+
+
+#############################################
+# Part 2: Cont vs Indirect
+#############################################
+echo ""
+echo ""
+echo "=========================================="
+echo "Part 2: Cont vs Indirect 분석"
+echo "=========================================="
+
+# Step 2-1: 입력 파일 생성
+echo ""
+echo "Step 1: 입력 파일 생성 중..."
+python3 << 'EOF'
+import pandas as pd
+
+df = pd.read_csv('Microbiome_Merged_All_TaxonomyMerged.tsv', sep='\t')
+
+# Cont와 Indirect 샘플만 선택
+cont_cols = [col for col in df.columns if 'Cont' in col]
+indirect_cols = [col for col in df.columns if 'Indirect' in col]
+selected_cols = ['Taxonomy'] + cont_cols + indirect_cols
+
+df_subset = df[selected_cols]
+sample_cols = cont_cols + indirect_cols
+
+with open('lefse_cont_vs_indirect.txt', 'w') as f:
+    # Class 행
+    class_labels = ['Cont']*len(cont_cols) + ['Indirect']*len(indirect_cols)
+    f.write('\t'.join(['Class'] + class_labels) + '\n')
+    
+    # Subject 행
+    f.write('\t'.join(['Subject'] + sample_cols) + '\n')
+    
+    # Feature 데이터
+    for idx, row in df_subset.iterrows():
+        taxonomy = row['Taxonomy'].replace(';', '|')
+        values = [str(int(row[col])) for col in sample_cols]
+        f.write('\t'.join([taxonomy] + values) + '\n')
+
+print("✓ lefse_cont_vs_indirect.txt 생성 완료!")
+EOF
+
+# Step 2-2: LEfSe 포맷 변환
+echo ""
+echo "Step 2: 포맷 변환 중..."
+lefse_format_input.py lefse_cont_vs_indirect.txt lefse_cont_vs_indirect.in -c 1 -s -1 -u 2 -o 1000000
+echo "✓ 포맷 변환 완료!"
+
+# Step 2-3: LEfSe 분석
+echo ""
+echo "Step 3: LEfSe 분석 실행 중 (LDA threshold = 2.0)..."
+lefse_run.py lefse_cont_vs_indirect.in lefse_cont_vs_indirect.res -l 2.0 -w 0.05
+echo "✓ 분석 완료!"
+
+# Step 2-4: 결과 확인
+echo ""
+echo "Step 4: 결과 요약"
+echo "----------------------------------------"
+num_biomarkers_ci=$(wc -l < lefse_cont_vs_indirect.res)
+echo "총 유의한 바이오마커 수: $num_biomarkers_ci"
+echo ""
+echo "상위 30개 바이오마커:"
+head -30 lefse_cont_vs_indirect.res
+
+# Step 2-5: 시각화
+echo ""
+echo "Step 5: 시각화 생성 중..."
+lefse_plot_res.py lefse_cont_vs_indirect.res lefse_barplot_cont_vs_indirect.png --format png --dpi 300 --width 10 --height 8
+echo "✓ 바 플롯: lefse_barplot_cont_vs_indirect.png"
+
+lefse_plot_cladogram.py lefse_cont_vs_indirect.res lefse_cladogram_cont_vs_indirect.png --format png --dpi 300
+echo "✓ 클라도그램: lefse_cladogram_cont_vs_indirect.png"
+
+mkdir -p biomarker_plots_cont_vs_indirect
+lefse_plot_features.py lefse_cont_vs_indirect.in lefse_cont_vs_indirect.res biomarker_plots_cont_vs_indirect/
+echo "✓ 개별 플롯: biomarker_plots_cont_vs_indirect/"
+
+# Step 2-6: 테이블 생성
+echo ""
+echo "Step 6: 테이블 생성 중..."
+python3 << 'EOF'
+import pandas as pd
+
+results = []
+with open('lefse_cont_vs_indirect.res', 'r') as f:
+    for line in f:
+        parts = line.strip().split('\t')
+        if len(parts) >= 5:
+            taxonomy = parts[0]
+            lda_score = parts[1]
+            enriched_group = parts[2] if parts[2] else 'NS'
+            pvalue = parts[3] if len(parts) > 3 and parts[3] else 'NA'
+            results.append({
+                'Taxonomy': taxonomy,
+                'LDA_score': float(lda_score) if lda_score else 0,
+                'Enriched_group': enriched_group,
+                'P_value': pvalue
+            })
+
+df = pd.DataFrame(results)
+df = df[df['Enriched_group'] != 'NS']
+df = df.sort_values('LDA_score', ascending=False)
+
+df.to_csv('lefse_cont_vs_indirect_table.tsv', sep='\t', index=False)
+df.head(50).to_csv('lefse_cont_vs_indirect_top50.tsv', sep='\t', index=False)
+
+print(f"✓ 전체 테이블: lefse_cont_vs_indirect_table.tsv ({len(df)}개)")
+print(f"✓ 상위 50개: lefse_cont_vs_indirect_top50.tsv")
+print(f"\n그룹별 바이오마커 수:")
+print(df['Enriched_group'].value_counts().to_string())
+EOF
+
+#############################################
+# 최종 요약
+#############################################
+echo ""
+echo ""
+echo "=========================================="
+echo "전체 분석 완료!"
+echo "=========================================="
+echo ""
+echo "【Cont vs Direct 결과 파일】"
+echo "  - lefse_cont_vs_direct.res: LEfSe 결과 원본"
+echo "  - lefse_barplot_cont_vs_direct.png: LDA 바 플롯"
+echo "  - lefse_cladogram_cont_vs_direct.png: 계통 클라도그램"
+echo "  - biomarker_plots_cont_vs_direct/: 개별 바이오마커 플롯"
+echo "  - lefse_cont_vs_direct_table.tsv: 전체 결과 테이블"
+echo "  - lefse_cont_vs_direct_top50.tsv: 상위 50개 테이블"
+echo ""
+echo "【Cont vs Indirect 결과 파일】"
+echo "  - lefse_cont_vs_indirect.res: LEfSe 결과 원본"
+echo "  - lefse_barplot_cont_vs_indirect.png: LDA 바 플롯"
+echo "  - lefse_cladogram_cont_vs_indirect.png: 계통 클라도그램"
+echo "  - biomarker_plots_cont_vs_indirect/: 개별 바이오마커 플롯"
+echo "  - lefse_cont_vs_indirect_table.tsv: 전체 결과 테이블"
+echo "  - lefse_cont_vs_indirect_top50.tsv: 상위 50개 테이블"
+echo ""
