@@ -1,0 +1,137 @@
+	import os
+import pandas as pd
+os.chdir('/home/temp_id/Desktop/FastSpar1')
+
+csv_file = 'Microbiome_Merged_All_withTaxonomy.csv'
+df = pd.read_csv(csv_file)
+sample_cols = [
+    'Cont1', 'Cont2', 'Cont3', 'Cont4', 'Cont5',
+    'Direct1', 'Direct2', 'Direct3', 'Direct4', 'Direct5',
+    'Indirect1', 'Indirect2', 'Indirect3', 'Indirect4', 'Indirect5'
+]
+biom_table = df.set_index('Name')[sample_cols]
+
+def save_biom_tsv(df, outfile, sample_order):
+    df = df[sample_order]
+    df.index.name = '#OTU ID'
+    df.to_csv(outfile, sep='\t')
+
+save_biom_tsv(biom_table, 'cont_otu_table_biom.tsv', ['Cont1','Cont2','Cont3','Cont4','Cont5'])
+save_biom_tsv(biom_table, 'direct_otu_table_biom.tsv', ['Direct1','Direct2','Direct3','Direct4','Direct5'])
+save_biom_tsv(biom_table, 'indirect_otu_table_biom.tsv', ['Indirect1','Indirect2','Indirect3','Indirect4','Indirect5'])
+save_biom_tsv(biom_table, 'all_otu_table_biom.tsv', sample_cols)
+
+
+### Conda activate ON!!!
+
+fastspar --otu_table cont_otu_table_biom.tsv --correlation cont_correlation.tsv --covariance cont_covariance.tsv --iterations 50 --threads 4
+fastspar --otu_table direct_otu_table_biom.tsv --correlation direct_correlation.tsv --covariance direct_covariance.tsv --iterations 50 --threads 4
+fastspar --otu_table indirect_otu_table_biom.tsv --correlation indirect_correlation.tsv --covariance indirect_covariance.tsv --iterations 50 --threads 4
+
+
+###
+
+fastspar_bootstrap --otu_table cont_otu_table_biom.tsv --number 1000 --prefix bootstrap_cont/cont_
+mkdir -p bootstrap_cor_cont
+parallel fastspar --otu_table {} --correlation bootstrap_cor_cont/cor_{/} --covariance bootstrap_cor_cont/cov_{/} --iterations 5 ::: bootstrap_cont/*
+fastspar_pvalues --otu_table cont_otu_table_biom.tsv --correlation cont_correlation.tsv --prefix bootstrap_cor_cont/cor_cont_ --permutations 1000 --outfile cont_pvalues.tsv
+
+fastspar_bootstrap --otu_table direct_otu_table_biom.tsv --number 1000 --prefix bootstrap_direct/direct_
+mkdir -p bootstrap_cor_direct
+parallel fastspar --otu_table {} --correlation bootstrap_cor_direct/cor_{/} --covariance bootstrap_cor_direct/cov_{/} --iterations 5 ::: bootstrap_direct/*
+fastspar_pvalues --otu_table direct_otu_table_biom.tsv --correlation direct_correlation.tsv --prefix bootstrap_cor_direct/cor_direct_ --permutations 1000 --outfile direct_pvalues.tsv
+
+fastspar_bootstrap --otu_table indirect_otu_table_biom.tsv --number 1000 --prefix bootstrap_indirect/indirect_
+mkdir -p bootstrap_cor_indirect
+parallel fastspar --otu_table {} --correlation bootstrap_cor_indirect/cor_{/} --covariance bootstrap_cor_indirect/cov_{/} --iterations 5 ::: bootstrap_indirect/*
+fastspar_pvalues --otu_table indirect_otu_table_biom.tsv --correlation indirect_correlation.tsv --prefix bootstrap_cor_indirect/cor_indirect_ --permutations 1000 --outfile indirect_pvalues.tsv
+
+
+###
+
+import pandas as pd
+import os
+os.chdir('/home/temp_id/Desktop/FastSpar1')
+
+def create_network_file(corr_file, pval_file, output_prefix, corr_threshold=0.3, pval_threshold=0.01):
+    corr = pd.read_csv(corr_file, sep='\t', index_col=0)
+    pval = pd.read_csv(pval_file, sep='\t', index_col=0)
+    edges = []
+    for i in range(len(corr.index)):
+        for j in range(i+1, len(corr.columns)):
+            node1 = corr.index[i]
+            node2 = corr.columns[j]
+            cor_value = corr.iloc[i, j]
+            p_value = pval.iloc[i, j]
+            if abs(cor_value) >= corr_threshold and p_value < pval_threshold:
+                interaction = 'positive' if cor_value > 0 else 'negative'
+                edges.append({
+                    'Source': node1,
+                    'Target': node2,
+                    'Correlation': cor_value,
+                    'P-value': p_value,
+                    'Interaction': interaction
+                })
+    edges_df = pd.DataFrame(edges)
+    edges_df.to_csv(f'{output_prefix}_network.tsv', sep='\t', index=False)
+    with open(f'{output_prefix}_network.sif', 'w') as f:
+        for _, row in edges_df.iterrows():
+            f.write(f"{row['Source']}\t{row['Interaction']}\t{row['Target']}\n")
+    print(f"{output_prefix}: {len(edges_df)} edges written.")
+    return edges_df
+
+# 그룹별 전체 네트워크
+create_network_file('cont_correlation.tsv', 'cont_pvalues.tsv', 'cont', corr_threshold=0.3, pval_threshold=0.01)
+create_network_file('direct_correlation.tsv', 'direct_pvalues.tsv', 'direct', corr_threshold=0.3, pval_threshold=0.01)
+create_network_file('indirect_correlation.tsv', 'indirect_pvalues.tsv', 'indirect', corr_threshold=0.3, pval_threshold=0.01)
+
+> 이 때 너무 많은 종이 나와서, 조금 더 필터를 진행함
+
+###
+
+import pandas as pd
+# direct
+direct_edges = pd.read_csv('direct_network.tsv', sep='\t')
+direct_top50 = direct_edges.reindex(direct_edges.Correlation.abs().sort_values(ascending=False).index).head(50)
+direct_top50.to_csv('direct_network_top50.tsv', sep='\t', index=False)
+with open('diimport pandas as pd
+# direct
+direct_edges = pd.read_csv('direct_network.tsv', sep='\t')
+direct_top50 = direct_edges.reindex(direct_edges.Correlation.abs().sort_values(ascending=False).index).head(50)
+direct_top50.to_csv('direct_network_top50.tsv', sep='\t', index=False)
+with open('direct_network_top50.sif', 'w') as f:
+    for _, row in direct_top50.iterrows():
+        f.write(f"{row['Source']}\t{row['Interaction']}\t{row['Target']}\n")
+# indirect
+indirect_edges = pd.read_csv('indirect_network.tsv', sep='\t')
+indirect_top50 = indirect_edges.reindex(indirect_edges.Correlation.abs().sort_values(ascending=False).index).head(50)
+indirect_top50.to_csv('indirect_network_top50.tsv', sep='\t', index=False)
+with open('indirect_network_top50.sif', 'w') as f:
+    for _, row in indirect_top50.iterrows():
+        f.write(f"{row['Source']}\t{row['Interaction']}\t{row['Target']}\n")
+# cont
+cont_edges = pd.read_csv('cont_network.tsv', sep='\t')
+cont_top50 = cont_edges.reindex(cont_edges.Correlation.abs().sort_values(ascending=False).index).head(50)
+cont_top50.to_csv('cont_network_top50.tsv', sep='\t', index=False)
+with open('cont_network_top50.sif', 'w') as f:
+    for _, row in cont_top50.iterrows():
+        f.write(f"{row['Source']}\t{row['Interaction']}\t{row['Target']}\n")
+rect_network_top50.sif', 'w') as f:
+    for _, row in direct_top50.iterrows():
+        f.write(f"{row['Source']}\t{row['Interaction']}\t{row['Target']}\n")
+# indirect
+indirect_edges = pd.read_csv('indirect_network.tsv', sep='\t')
+indirect_top50 = indirect_edges.reindex(indirect_edges.Correlation.abs().sort_values(ascending=False).index).head(50)
+indirect_top50.to_csv('indirect_network_top50.tsv', sep='\t', index=False)
+with open('indirect_network_top50.sif', 'w') as f:
+    for _, row in indirect_top50.iterrows():
+        f.write(f"{row['Source']}\t{row['Interaction']}\t{row['Target']}\n")
+# cont
+cont_edges = pd.read_csv('cont_network.tsv', sep='\t')
+cont_top50 = cont_edges.reindex(cont_edges.Correlation.abs().sort_values(ascending=False).index).head(50)
+cont_top50.to_csv('cont_network_top50.tsv', sep='\t', index=False)
+with open('cont_network_top50.sif', 'w') as f:
+    for _, row in cont_top50.iterrows():
+        f.write(f"{row['Source']}\t{row['Interaction']}\t{row['Target']}\n")
+> 노드 50개 기준으로 재 필터 
+
