@@ -1,0 +1,281 @@
+#Triangle 
+
+library(tidyverse)
+library(ggplot2)
+library(RColorBrewer)
+library(effsize)   # cliff.delta
+
+
+df <- read.csv("C:/Users/Marine/Desktop/HM_Microbiome/HM_LEfSe/Microbiome_Merged_All_withTaxonomy_251123.csv",
+               check.names = FALSE)
+
+out_dir <- "C:/Users/Marine/Desktop/251123_Relative A"
+if (!dir.exists(out_dir)) dir.create(out_dir)
+
+sample_cols <- grep("^(Cont|Direct|Indirect)\\d+$", colnames(df), value = TRUE)
+
+levels_to_plot <- c("Phylum","Class","Order","Family","Genus","Species")
+levels_to_plot <- levels_to_plot[levels_to_plot %in% colnames(df)]
+
+reference_group <- "Cont"
+compare_groups  <- c("Direct", "Indirect")
+
+do_sample_plot <- TRUE
+do_mean_plot   <- TRUE
+
+for (lvl in levels_to_plot) {
+  
+  cat("\n[TRIANGLE] ", lvl, " Wilcoxon + Cliff's delta...\n")
+  
+  ## 1) long format + Rel abundance
+  mdf_lvl <- df %>%
+    select(all_of(lvl), all_of(sample_cols)) %>%
+    pivot_longer(
+      -all_of(lvl),
+      names_to  = "Sample",
+      values_to = "Count"
+    ) %>%
+    mutate(
+      Count = as.numeric(Count),
+      !!lvl := ifelse(
+        is.na(.data[[lvl]]) | .data[[lvl]] == "" | .data[[lvl]] == "-",
+        "Unassigned",
+        .data[[lvl]]
+      ),
+      Group = case_when(
+        grepl("^Cont",     Sample) ~ "Cont",
+        grepl("^Direct",   Sample) ~ "Direct",
+        grepl("^Indirect", Sample) ~ "Indirect",
+        TRUE                        ~ NA_character_
+      )
+    ) %>%
+    filter(!is.na(Count), !is.na(Group)) %>%
+    group_by(Sample) %>%
+    mutate(RelAbund = Count / sum(Count, na.rm = TRUE)) %>%
+    ungroup()
+  
+  cat("  - mdf_lvl rows:", nrow(mdf_lvl), "\n")
+  
+  ## 2) Cont vs Direct/Indirect : Wilcoxon + Cliff's delta
+  res_delta <- expand.grid(
+    Taxon  = unique(mdf_lvl[[lvl]]),
+    Group2 = compare_groups,
+    stringsAsFactors = FALSE
+  ) %>%
+    rowwise() %>%
+    mutate(
+      ref_vals = list(mdf_lvl$RelAbund[mdf_lvl[[lvl]] == Taxon &
+                                         mdf_lvl$Group == reference_group]),
+      cmp_vals = list(mdf_lvl$RelAbund[mdf_lvl[[lvl]] == Taxon &
+                                         mdf_lvl$Group == Group2]),
+      n_ref = length(unlist(ref_vals)),
+      n_cmp = length(unlist(cmp_vals)),
+      p = if (n_ref >= 2 & n_cmp >= 2) {
+        wilcox.test(unlist(ref_vals), unlist(cmp_vals),
+                    exact = FALSE)$p.value
+      } else {
+        NA_real_
+      },
+      delta = if (n_ref >= 2 & n_cmp >= 2) {
+        effsize::cliff.delta(unlist(cmp_vals),
+                             unlist(ref_vals))$estimate
+      } else {
+        NA_real_
+      },
+      mean_abund = mean(c(unlist(ref_vals), unlist(cmp_vals)),
+                        na.rm = TRUE)
+    ) %>%
+    ungroup() %>%
+    mutate(
+      sig    = !is.na(p) & p < 0.1,
+      dir    = ifelse(delta >= 0,
+                      "Positive association",
+                      "Negative association"),
+      size_v = log10(mean_abund + 1e-6)
+    )
+  
+  cat("  - res_delta rows:", nrow(res_delta), "\n")
+  cat("  - non-NA p:", sum(!is.na(res_delta$p)), "\n")
+  cat("  - raw p < 0.05 numb:", sum(res_delta$sig, na.rm = TRUE), "\n")
+  
+  sig_pairs <- res_delta %>%
+    filter(sig, !is.na(delta), !is.na(size_v)) %>%
+    select(Taxon, Group2, delta, dir, size_v)
+  
+  cat("  - sig (Taxon, Group2) pairs:", nrow(sig_pairs), "\n")
+  
+  if (nrow(sig_pairs) == 0) {
+    cat("  >>", lvl, ": Taxon-Group2 X.\n")
+    next
+  }
+  
+  plot_df_sample <- sig_pairs %>%
+    inner_join(
+      mdf_lvl %>%
+        filter(Group %in% compare_groups) %>%
+        select(Taxon = all_of(lvl), Sample, Group, RelAbund),
+      by = c("Taxon", "Group2" = "Group")
+    ) %>%
+    mutate(
+      Sample = factor(Sample, levels = sort(unique(Sample)))
+    )
+  
+  cat("  - plot_df_sample rows:", nrow(plot_df_sample), "\n")
+  
+  plot_df_mean <- plot_df_sample %>%
+    group_by(Taxon, Group2) %>%
+    summarise(
+      RelAbund = mean(RelAbund, na.rm = TRUE),
+      delta    = first(delta),
+      dir      = first(dir),
+      .groups  = "drop"
+    ) %>%
+    mutate(
+      Group2 = factor(Group2, levels = compare_groups)
+    )
+  
+  cat("  - plot_df_mean rows:", nrow(plot_df_mean), "\n")
+  
+  if (do_sample_plot && nrow(plot_df_sample) > 0) {
+    
+    p_tri_sample <- ggplot(plot_df_sample, aes(x = Taxon, y = Sample)) +
+      geom_point(
+        aes(
+          shape = dir,
+          fill  = delta,
+          size  = RelAbund
+        ),
+        color  = "black",
+        stroke = 0.3,
+        alpha  = 0.8
+      ) +
+      scale_shape_manual(
+        values = c("Positive association" = 24,
+                   "Negative association" = 25),
+        name = "Direction"
+      ) +
+      scale_fill_gradient2(
+        low  = "blue",
+        mid  = "white",
+        high = "red",
+        name = "Effect size"
+      ) +
+      scale_size(
+        range = c(6, 12),
+        name  = "Relative abundance"
+      ) +
+      theme_bw() +
+      theme(
+        axis.text.x  = element_text(size = 12, angle = 45, hjust = 1),
+        axis.text.y  = element_text(size = 11),
+        axis.title.x = element_text(size = 14, face = "bold"),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        plot.title   = element_text(size = 16, face = "bold", hjust = 0.5),
+        legend.title = element_text(size = 12, face = "bold")
+      ) +
+      labs(
+        title = paste(
+          lvl,
+          "significant changes vs", reference_group,
+          "(sample-level)"
+        ),
+        x = lvl,
+        y = "Sample (Direct1~5, Indirect1~5)"
+      )
+    
+    print(p_tri_sample)
+    
+    tri_png_sample <- file.path(
+      out_dir,
+      paste0("Triangle_SAMPLE_", lvl, "_vs_", reference_group, ".png")
+    )
+    
+    ggsave(
+      filename = tri_png_sample,
+      plot     = p_tri_sample,
+      width    = 14,
+      height   = 10,
+      dpi      = 600
+    )
+    
+    cat("\n[TRIANGLE] Good: ", tri_png_sample, "\n")
+    
+    triangle_csv_sample <- file.path(
+      out_dir,
+      paste0("Triangle_SAMPLE_TABLE_", lvl, "_vs_", reference_group, ".csv")
+    )
+    write.csv(plot_df_sample, triangle_csv_sample, row.names = FALSE)
+  }
+
+  if (do_mean_plot && nrow(plot_df_mean) > 0) {
+    
+    p_tri_mean <- ggplot(plot_df_mean, aes(x = Taxon, y = Group2)) +
+      geom_point(
+        aes(
+          shape = dir,
+          fill  = delta,
+          size  = RelAbund
+        ),
+        color  = "black",
+        stroke = 0.7
+      ) +
+      scale_shape_manual(
+        values = c("Positive association" = 24,
+                   "Negative association" = 25),
+        name = "Direction"
+      ) +
+      scale_fill_gradient2(
+        low  = "blue",
+        mid  = "white",
+        high = "red",
+        name = "Effect size (Cliff's delta)"
+      ) +
+      scale_size(
+        range = c(3, 7),
+        name  = "Mean relative abundance"
+      ) +
+      theme_bw() +
+      theme(
+        axis.text.x  = element_text(size = 12, angle = 45, hjust = 1),
+        axis.text.y  = element_text(size = 11),
+        axis.title.x = element_text(size = 14, face = "bold"),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        plot.title   = element_text(size = 16, face = "bold", hjust = 0.5),
+        legend.title = element_text(size = 12, face = "bold")
+      ) +
+      labs(
+        title = paste(
+          lvl,
+          "significant changes vs", reference_group,
+          "(group mean)"
+        ),
+        x = lvl,
+        y = "Group"
+      )
+    
+    print(p_tri_mean)
+    
+    tri_png_mean <- file.path(
+      out_dir,
+      paste0("Triangle_MEAN_", lvl, "_vs_", reference_group, ".png")
+    )
+    
+    ggsave(
+      filename = tri_png_mean,
+      plot     = p_tri_mean,
+      width    = 14,
+      height   = 10,
+      dpi      = 600
+    )
+    
+    cat("\n[TRIANGLE] Good: ", tri_png_mean, "\n")
+    
+    triangle_csv_mean <- file.path(
+      out_dir,
+      paste0("Triangle_MEAN_TABLE_", lvl, "_vs_", reference_group, ".csv")
+    )
+    write.csv(plot_df_mean, triangle_csv_mean, row.names = FALSE)
+  }
+}
+
+cat("\n[TRIANGLE] All level good.\n")
