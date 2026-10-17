@@ -1,0 +1,179 @@
+#!/bin/bash
+
+python3 << 'EOF'
+import pandas as pd
+
+df = pd.read_csv(Your microbiome data file.csv', sep='\t')
+sample_cols = [col for col in df.columns if col != 'Taxonomy']
+
+with open('lefse_input_3groups.txt', 'w') as f:
+    class_labels = [
+        'Cont' if 'Cont' in s else
+        'Direct' if 'Direct' in s else
+        'Indirect'
+        for s in sample_cols
+    ]
+    f.write('\t'.join(['Class'] + class_labels) + '\n')
+    f.write('\t'.join(['Subject'] + sample_cols) + '\n')
+
+    for _, row in df.iterrows():
+        taxonomy = row['Taxonomy'].replace(';', '|')
+        values = [str(int(row[col])) for col in sample_cols]
+        f.write('\t'.join([taxonomy] + values) + '\n')
+EOF
+
+lefse_format_input.py lefse_input_3groups.txt lefse_3groups.in -c 1 -s -1 -u 2 -o 1000000
+lefse_run.py lefse_3groups.in lefse_3groups_results.res -l 2.0 -w 0.05
+
+lefse_plot_res.py lefse_3groups_results.res lefse_barplot_3groups.png --format png --dpi 300 --width 10 --height 8
+lefse_plot_cladogram.py lefse_3groups_results.res lefse_cladogram_3groups.png --format png --dpi 300
+mkdir -p biomarker_plots_3groups
+lefse_plot_features.py lefse_3groups.in lefse_3groups_results.res biomarker_plots_3groups/
+
+python3 << 'EOF'
+import pandas as pd
+
+results = []
+
+with open('lefse_3groups_results.res', 'r') as f:
+    for line in f:
+        parts = line.strip().split('\t')
+
+        if len(parts) >= 5:
+            taxonomy = parts[0]
+            lda_score = parts[1]
+            enriched_group = parts[2] if parts[2] else 'NS'
+            pvalue = parts[3] if parts[3] else 'NA'
+
+            results.append({
+                'Taxonomy': taxonomy,
+                'LDA_score': float(lda_score) if lda_score else 0,
+                'Enriched_group': enriched_group,
+                'P_value': pvalue
+            })
+
+df = pd.DataFrame(results)
+df = df[df['Enriched_group'] != 'NS']
+df = df.sort_values('LDA_score', ascending=False)
+
+df.to_csv('lefse_results_3groups_table.tsv', sep='\t', index=False)
+df.head(50).to_csv('lefse_results_3groups_top50.tsv', sep='\t', index=False)
+EOF
+
+python3 << 'EOF'
+import pandas as pd
+
+df = pd.read_csv(Your microbiome data.csv', sep='\t')
+
+cont_cols = [col for col in df.columns if 'Cont' in col]
+direct_cols = [col for col in df.columns if 'Direct' in col]
+sample_cols = cont_cols + direct_cols
+df_subset = df[['Taxonomy'] + sample_cols]
+
+with open('lefse_cont_vs_direct.txt', 'w') as f:
+    class_labels = ['Cont'] * len(cont_cols) + ['Direct'] * len(direct_cols)
+    f.write('\t'.join(['Class'] + class_labels) + '\n')
+    f.write('\t'.join(['Subject'] + sample_cols) + '\n')
+
+    for _, row in df_subset.iterrows():
+        taxonomy = row['Taxonomy'].replace(';', '|')
+        values = [str(int(row[col])) for col in sample_cols]
+        f.write('\t'.join([taxonomy] + values) + '\n')
+EOF
+
+lefse_format_input.py lefse_cont_vs_direct.txt lefse_cont_vs_direct.in -c 1 -s -1 -u 2 -o 1000000
+lefse_run.py lefse_cont_vs_direct.in lefse_cont_vs_direct.res -l 2.0 -w 0.05
+
+lefse_plot_res.py lefse_cont_vs_direct.res lefse_barplot_cont_vs_direct.png --format png --dpi 300 --width 10 --height 8
+lefse_plot_cladogram.py lefse_cont_vs_direct.res lefse_cladogram_cont_vs_direct.png --format png --dpi 300
+mkdir -p biomarker_plots_cont_vs_direct
+lefse_plot_features.py lefse_cont_vs_direct.in lefse_cont_vs_direct.res biomarker_plots_cont_vs_direct/
+
+python3 << 'EOF'
+import pandas as pd
+
+results = []
+
+with open('lefse_cont_vs_direct.res', 'r') as f:
+    for line in f:
+        parts = line.strip().split('\t')
+
+        if len(parts) >= 5:
+            taxonomy = parts[0]
+            lda_score = parts[1]
+            enriched_group = parts[2] if parts[2] else 'NS'
+            pvalue = parts[3] if parts[3] else 'NA'
+
+            results.append({
+                'Taxonomy': taxonomy,
+                'LDA_score': float(lda_score) if lda_score else 0,
+                'Enriched_group': enriched_group,
+                'P_value': pvalue
+            })
+
+df = pd.DataFrame(results)
+df = df[df['Enriched_group'] != 'NS']
+df = df.sort_values('LDA_score', ascending=False)
+
+df.to_csv('lefse_cont_vs_direct_table.tsv', sep='\t', index=False)
+df.head(50).to_csv('lefse_cont_vs_direct_top50.tsv', sep='\t', index=False)
+EOF
+
+python3 << 'EOF'
+import pandas as pd
+
+df = pd.read_csv(Your microbiome data.csv', sep='\t')
+
+cont_cols = [col for col in df.columns if 'Cont' in col]
+indirect_cols = [col for col in df.columns if 'Indirect' in col]
+sample_cols = cont_cols + indirect_cols
+df_subset = df[['Taxonomy'] + sample_cols]
+
+with open('lefse_cont_vs_indirect.txt', 'w') as f:
+    class_labels = ['Cont'] * len(cont_cols) + ['Indirect'] * len(indirect_cols)
+    f.write('\t'.join(['Class'] + class_labels) + '\n')
+    f.write('\t'.join(['Subject'] + sample_cols) + '\n')
+
+    for _, row in df_subset.iterrows():
+        taxonomy = row['Taxonomy'].replace(';', '|')
+        values = [str(int(row[col])) for col in sample_cols]
+        f.write('\t'.join([taxonomy] + values) + '\n')
+EOF
+
+lefse_format_input.py lefse_cont_vs_indirect.txt lefse_cont_vs_indirect.in -c 1 -s -1 -u 2 -o 1000000
+lefse_run.py lefse_cont_vs_indirect.in lefse_cont_vs_indirect.res -l 2.0 -w 0.05
+
+lefse_plot_res.py lefse_cont_vs_indirect.res lefse_barplot_cont_vs_indirect.png --format png --dpi 300 --width 10 --height 8
+lefse_plot_cladogram.py lefse_cont_vs_indirect.res lefse_cladogram_cont_vs_indirect.png --format png --dpi 300
+mkdir -p biomarker_plots_cont_vs_indirect
+lefse_plot_features.py lefse_cont_vs_indirect.in lefse_cont_vs_indirect.res biomarker_plots_cont_vs_indirect/
+
+python3 << 'EOF'
+import pandas as pd
+
+results = []
+
+with open('lefse_cont_vs_indirect.res', 'r') as f:
+    for line in f:
+        parts = line.strip().split('\t')
+
+        if len(parts) >= 5:
+            taxonomy = parts[0]
+            lda_score = parts[1]
+            enriched_group = parts[2] if parts[2] else 'NS'
+            pvalue = parts[3] if parts[3] else 'NA'
+
+            results.append({
+                'Taxonomy': taxonomy,
+                'LDA_score': float(lda_score) if lda_score else 0,
+                'Enriched_group': enriched_group,
+                'P_value': pvalue
+            })
+
+df = pd.DataFrame(results)
+df = df[df['Enriched_group'] != 'NS']
+df = df.sort_values('LDA_score', ascending=False)
+
+df.to_csv('lefse_cont_vs_indirect_table.tsv', sep='\t', index=False)
+df.head(50).to_csv('lefse_cont_vs_indirect_top50.tsv', sep='\t', index=False)
+EOF
